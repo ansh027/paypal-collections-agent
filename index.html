@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Collections Agent</title>
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@33/dist/ag-grid-community.min.js"></script>
+<style>
+  :root { --ink:#14171f; --muted:#5b6270; --line:#e3e6ec; --accent:#0b5fff; --bg:#f6f7f9; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,sans-serif; color:var(--ink); background:var(--bg); }
+  header { padding:20px 32px; background:#fff; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:14px; }
+  main { display:grid; grid-template-columns: 420px 1fr; gap:24px; padding:24px 32px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:20px; }
+  h2 { font-size:15px; margin:0 0 12px; }
+  textarea { width:100%; height:150px; padding:10px; border:1px solid var(--line); border-radius:8px; font:inherit; resize:vertical; }
+  input { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font:inherit; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 16px; font:inherit; font-weight:600; cursor:pointer; margin-top:10px; }
+  button.secondary { background:#fff; color:var(--ink); border:1px solid var(--line); }
+  button:disabled { opacity:.5; cursor:wait; }
+  .items td, .items th { padding:6px 4px; font-size:14px; text-align:left; border-bottom:1px solid var(--line); }
+  .items { width:100%; border-collapse:collapse; margin:8px 0; }
+  .flag { background:#fff6e0; border:1px solid #f2d48a; border-radius:8px; padding:10px; font-size:13px; margin:10px 0; }
+  .flag li { margin:4px 0; }
+  .ok { background:#e8f7ee; border:1px solid #9fd8b4; border-radius:8px; padding:10px; font-size:14px; margin-top:10px; }
+  .err { background:#fdecec; border:1px solid #f0a8a8; border-radius:8px; padding:10px; font-size:14px; margin-top:10px; }
+  #grid { height:380px; }
+  .feed { list-style:none; padding:0; margin:0; max-height:220px; overflow:auto; font-size:13px; }
+  .feed li { padding:6px 0; border-bottom:1px solid var(--line); }
+  .feed .paid { color:#127a3a; font-weight:600; }
+  .muted { color:var(--muted); font-size:12px; }
+  .right { display:flex; flex-direction:column; gap:24px; }
+  label { font-size:13px; color:var(--muted); display:block; margin:10px 0 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Collections Agent</h1>
+  <p>Paste a client message. The agent drafts the PayPal invoice, you approve, it gets you paid.</p>
+</header>
+<main>
+  <section class="card">
+    <h2>1. Client message</h2>
+    <textarea id="msg" placeholder="e.g. Let's go with 3 banners at $40 each plus the logo files for $150..."></textarea>
+    <button id="draftBtn">Draft invoice</button>
+    <div id="draft"></div>
+  </section>
+
+  <div class="right">
+    <section class="card">
+      <h2>Invoices <span class="muted">(live from PayPal)</span> <button class="secondary" id="refreshBtn" style="float:right;margin:0;padding:4px 10px">Refresh</button></h2>
+      <div id="grid" class="ag-theme-quartz"></div>
+    </section>
+    <section class="card">
+      <h2>Agent activity</h2>
+      <ul class="feed" id="feed"><li class="muted">No activity yet.</li></ul>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let currentDraft = null;
+
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || r.statusText);
+  return data;
+}
+
+$("draftBtn").onclick = async () => {
+  const btn = $("draftBtn");
+  btn.disabled = true; btn.textContent = "Agent is reading...";
+  $("draft").innerHTML = "";
+  try {
+    currentDraft = await api("/api/draft", { method: "POST", body: JSON.stringify({ message: $("msg").value }) });
+    renderDraft();
+  } catch (e) {
+    $("draft").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = "Draft invoice";
+  }
+};
+
+function renderDraft() {
+  const d = currentDraft;
+  const total = d.items.reduce((s, i) => s + i.quantity * i.unit_price, 0);
+  const flags = d.missing_or_unclear.length
+    ? `<div class="flag"><b>Agent needs your input:</b><ul>${d.missing_or_unclear.map(f => `<li>${esc(f)}</li>`).join("")}</ul></div>` : "";
+  if (!d.items.length) {
+    $("draft").innerHTML = flags + `<div class="err">No billable items found. The agent won't invent charges.</div>`;
+    return;
+  }
+  $("draft").innerHTML = `
+    <h2 style="margin-top:20px">2. Review draft</h2>
+    <div class="muted">Client: ${esc(d.client_name) || "unknown"}</div>
+    <table class="items"><tr><th>Item</th><th>Qty</th><th>Price</th></tr>
+      ${d.items.map(i => `<tr><td>${esc(i.name)}</td><td>${i.quantity}</td><td>${i.unit_price.toFixed(2)}</td></tr>`).join("")}
+      <tr><th colspan="2">Total</th><th>${total.toFixed(2)} ${esc(d.currency)}</th></tr>
+    </table>
+    ${flags}
+    <label>Client email</label><input id="email" value="${esc(d.client_email)}" placeholder="client@example.com">
+    <label>Due in (days)</label><input id="due" type="number" value="${d.due_in_days}">
+    <label>Note to client</label><input id="note" value="${esc(d.note)}">
+    <button id="sendBtn">Approve &amp; send via PayPal</button>
+    <div id="sendResult"></div>`;
+  $("sendBtn").onclick = sendInvoice;
+}
+
+async function sendInvoice() {
+  const btn = $("sendBtn");
+  btn.disabled = true; btn.textContent = "Sending...";
+  try {
+    const res = await api("/api/send", { method: "POST", body: JSON.stringify({
+      client_email: $("email").value.trim(),
+      items: currentDraft.items,
+      currency: currentDraft.currency || "USD",
+      note: $("note").value,
+      due_in_days: parseInt($("due").value || "10", 10),
+    })});
+    $("sendResult").innerHTML = `<div class="ok">Sent. Invoice ${esc(res.invoice_id)}</div>`;
+    loadInvoices(); loadEvents();
+  } catch (e) {
+    $("sendResult").innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = "Approve & send via PayPal";
+  }
+}
+
+// ---------- Invoice grid (AG Grid) ----------
+const statusStyle = (p) => {
+  const s = p.value;
+  if (s === "PAID" || s === "MARKED_AS_PAID") return { color: "#127a3a", fontWeight: 600 };
+  if (s === "SENT" || s === "UNPAID") return { color: "#a15c00", fontWeight: 600 };
+  return null;
+};
+const grid = agGrid.createGrid($("grid"), {
+  columnDefs: [
+    { field: "number", headerName: "#", width: 90 },
+    { field: "client", flex: 2 },
+    { field: "amount", width: 110, valueFormatter: p => p.value.toFixed(2) },
+    { field: "currency", width: 90 },
+    { field: "status", width: 140, cellStyle: statusStyle },
+    { field: "due_date", headerName: "Due", width: 120, sort: "asc" },
+  ],
+  defaultColDef: { sortable: true, filter: true, resizable: true },
+  rowData: [],
+});
+
+async function loadInvoices() {
+  try { grid.setGridOption("rowData", await api("/api/invoices")); }
+  catch (e) { console.error(e); }
+}
+
+async function loadEvents() {
+  try {
+    const ev = await api("/api/events");
+    $("feed").innerHTML = ev.length
+      ? ev.map(e => `<li class="${e.kind}"><span class="muted">${esc(e.time.replace("T"," "))}</span> ${esc(e.message)}</li>`).join("")
+      : `<li class="muted">No activity yet.</li>`;
+    if (ev.some(e => e.kind === "paid")) loadInvoices();
+  } catch (e) { console.error(e); }
+}
+
+$("refreshBtn").onclick = loadInvoices;
+loadInvoices(); loadEvents();
+setInterval(loadEvents, 5000);  // live feed so webhook payments appear on their own
+</script>
+</body>
+</html>

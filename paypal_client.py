@@ -80,6 +80,25 @@ class PayPalClient:
             raise PayPalError(f"Get invoice failed: {r.status_code} {r.text}")
         return r.json()
 
+    def verify_webhook(self, headers, event, webhook_id):
+        """Ask PayPal whether a webhook really came from PayPal. Returns True/False."""
+        body = {
+            "auth_algo": headers.get("paypal-auth-algo"),
+            "cert_url": headers.get("paypal-cert-url"),
+            "transmission_id": headers.get("paypal-transmission-id"),
+            "transmission_sig": headers.get("paypal-transmission-sig"),
+            "transmission_time": headers.get("paypal-transmission-time"),
+            "webhook_id": webhook_id,
+            "webhook_event": event,
+        }
+        r = requests.post(
+            f"{BASE}/v1/notifications/verify-webhook-signature",
+            headers=self._headers(),
+            json=body,
+            timeout=30,
+        )
+        return r.status_code == 200 and r.json().get("verification_status") == "SUCCESS"
+
     def list_invoices(self, page_size=50):
         r = requests.get(
             f"{BASE}/v2/invoicing/invoices",
